@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="800" viewBox="0 0 800 800">
+<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#f8f5ef"/><stop offset="1" stop-color="#e8e1f7"/></linearGradient></defs>
+<rect width="800" height="800" fill="url(#bg)"/><circle cx="400" cy="300" r="172" fill="#080808"/>
+<image href="../brand-logo.jpg" x="230" y="130" width="340" height="340" preserveAspectRatio="xMidYMid meet"/>
+<text x="400" y="565" font-family="Arial,'Noto Sans TC',sans-serif" font-size="38" font-weight="700" fill="#272238" text-anchor="middle">商品展示圖待補</text>
+<text x="400" y="615" font-family="Arial,sans-serif" font-size="23" fill="#645d75" text-anchor="middle">PRODUCT IMAGE PENDING</text>
+<text x="400" y="680" font-family="Arial,sans-serif" font-size="20" letter-spacing="4" fill="#645d75" text-anchor="middle">SAN SHI INTERNATIONAL MALL</text>
+</svg>
