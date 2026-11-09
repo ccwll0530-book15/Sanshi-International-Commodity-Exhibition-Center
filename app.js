@@ -1,6 +1,7 @@
 (() => {
 const $ = s => document.querySelector(s);
 const app = $('#app');
+const SUPABASE_CONFIG = window.SANSI_SUPABASE_CONFIG || {};
 const productDefaults = window.CUSTOM_PRODUCTS.map(p => ({...p}));
 const STORAGE = {products:'unyuhuan_products_v1',cart:'unyuhuan_cart_v1',orders:'unyuhuan_orders_v1'};
 const categories=['全部商品',...(window.SANSI_CATEGORIES||Array.from(new Set(window.CUSTOM_PRODUCTS.map(p=>p.category))))];
@@ -39,12 +40,129 @@ $('#addDetailCart').addEventListener('click',()=>{const o=options();addToCart(p.
 function cartTotals(cart){let total=0,needsQuote=false;for(const i of cart){const p=productById(i.id);if(!p||!p.price||Number(p.price)<=0)needsQuote=true;else total+=Number(p.price)*Number(i.qty)}return {total,needsQuote}}
 function renderCart(){const cart=getCart();if(!cart.length){app.innerHTML=`<section class="page-wrap"><div class="empty-state"><div class="emoji">🛍</div><h2>購物車還是空的</h2><p>看看有哪些商品能把你的創意變成日常用品。</p><a class="btn btn-dark" href="#home">前往挑選商品</a></div></section>`;return}const totals=cartTotals(cart);app.innerHTML=`<section class="page-wrap"><h1 class="page-title">我的購物車</h1><p class="page-intro">請確認商品、數量及客製需求。標示「價格待設定」的商品會作為詢價項目，不代表已確認售價。</p><div class="cart-layout"><div class="panel">${cart.map((i,index)=>{const p=productById(i.id);if(!p)return '';return `<div class="cart-item"><img src="${p.poster}" alt="" onerror="this.onerror=null;this.src='assets/posters/placeholder.svg'"><div><h3>${html(p.name)}</h3><p>規格：${html(i.variant)}</p><p>客製備註：${html(i.note||'未填寫')}</p>${i.photoName?`<span class="cart-upload-tag">已選圖片：${html(i.photoName)}（未上傳）</span>`:''}<div class="qty-control"><button data-minus="${index}" aria-label="減少數量">−</button><span>${i.qty}</span><button data-plus="${index}" aria-label="增加數量">+</button></div></div><div style="text-align:right"><b style="font-size:12px">${p.price?'NT$ '+(Number(p.price)*i.qty).toLocaleString('zh-TW'):'待報價'}</b><br><button class="remove-btn" data-remove="${index}">移除</button></div></div>`}).join('')}</div><aside class="panel"><h2 style="font-size:17px;margin:0 0 15px">訂單摘要</h2><div class="summary-row"><span class="muted">商品數量</span><b>${cart.reduce((s,i)=>s+i.qty,0)} 件</b></div><div class="summary-row"><span class="muted">商品小計</span><b>${totals.needsQuote?'部分商品待報價':'NT$ '+totals.total.toLocaleString('zh-TW')}</b></div><div class="summary-row"><span class="muted">運費</span><span>結帳前確認</span></div><div class="summary-row total"><span>合計</span><span>${totals.needsQuote?'待確認報價':'NT$ '+totals.total.toLocaleString('zh-TW')}</span></div><p class="muted" style="font-size:11px;line-height:1.8">${totals.needsQuote?'目前至少一款商品尚未設定售價，提交後仍需人工確認報價。':'此金額為商品小計，運費及其他費用尚未計算。'}</p><button class="btn btn-dark full" id="goCheckout">填寫訂購資料</button><a class="btn btn-light full" style="margin-top:9px" href="#home">繼續購物</a></aside></div></section>`;
 app.querySelectorAll('[data-minus]').forEach(b=>b.addEventListener('click',()=>{const c=getCart(),i=Number(b.dataset.minus);if(c[i])c[i].qty=Math.max(1,c[i].qty-1);saveCart(c);renderCart()}));app.querySelectorAll('[data-plus]').forEach(b=>b.addEventListener('click',()=>{const c=getCart(),i=Number(b.dataset.plus);if(c[i])c[i].qty=Math.min(99,c[i].qty+1);saveCart(c);renderCart()}));app.querySelectorAll('[data-remove]').forEach(b=>b.addEventListener('click',()=>{const c=getCart();c.splice(Number(b.dataset.remove),1);saveCart(c);renderCart()}));$('#goCheckout').addEventListener('click',()=>location.hash='#checkout');}
-function renderCheckout(){const cart=getCart();if(!cart.length){renderCart();return}const t=cartTotals(cart);app.innerHTML=`<section class="page-wrap"><h1 class="page-title">填寫訂購資料</h1><p class="page-intro">請填寫聯絡方式及配送資訊。送出後目前只會在此瀏覽器建立測試訂單，不會自動通知商家或扣款。</p><form id="checkoutForm" class="checkout-grid"><div class="panel"><h2 class="form-section-title">聯絡與配送資料</h2><div class="two-col"><div class="field"><label for="custName">姓名／收件人 *</label><input id="custName" name="name" autocomplete="name" required placeholder="請填寫姓名"></div><div class="field"><label for="custPhone">聯絡電話 *</label><input id="custPhone" name="phone" autocomplete="tel" required inputmode="tel" placeholder="09xx-xxx-xxx"></div></div><div class="field"><label for="custEmail">電子郵件（選填）</label><input id="custEmail" type="email" autocomplete="email" placeholder="name@example.com"></div><div class="field"><label for="shipMethod">配送方式 *</label><select id="shipMethod" required><option value="">請選擇配送方式</option><option>宅配（運費待確認）</option><option>超商取貨（需確認商品尺寸與平台支援）</option><option>其他／與賣家確認</option></select></div><div class="field"><label for="custAddress">配送地址／取貨備註 *</label><input id="custAddress" required autocomplete="street-address" placeholder="請填寫可聯絡的配送資訊"></div><div class="field"><label for="orderNote">整筆訂單備註（選填）</label><textarea id="orderNote" placeholder="例如希望聯絡的時段、分批寄送需求"></textarea></div><label class="checkbox-row"><input type="checkbox" id="termsOk" required><span>我已確認商品內容與圖片使用權，並了解此頁為測試版本，送出不代表已付款或正式成立製作訂單。*</span></label><button class="btn btn-dark full" type="submit">送出測試訂單／詢價單</button><p class="muted" style="font-size:10px;line-height:1.8">請勿在此測試網站輸入信用卡資料或其他不必要的敏感資訊。</p></div><aside class="panel"><h2 class="form-section-title">你的商品</h2>${cart.map(i=>{const p=productById(i.id);return `<div class="summary-row"><span>${html(p.name)} × ${i.qty}</span><b>${p.price?'NT$ '+(p.price*i.qty).toLocaleString('zh-TW'):'待報價'}</b></div>`}).join('')}<div class="summary-row"><span class="muted">運費</span><span>待確認</span></div><div class="summary-row total"><span>商品小計</span><span>${t.needsQuote?'待報價':'NT$ '+t.total.toLocaleString('zh-TW')}</span></div><div class="notice-box">正式營運前還需要：安全的照片上傳儲存、商家訂單後台、訂單通知、付款金流、配送及退換貨流程。</div><a href="#cart" class="btn btn-light full">返回購物車修改</a></aside></form></section>`;
-$('#checkoutForm').addEventListener('submit',e=>{e.preventDefault();const cart=getCart();const totals=cartTotals(cart);const order={id:'UYH-'+Date.now().toString().slice(-8),createdAt:new Date().toISOString(),status:'測試／待人工確認',customer:{name:$('#custName').value.trim(),phone:$('#custPhone').value.trim(),email:$('#custEmail').value.trim(),shipping:$('#shipMethod').value,address:$('#custAddress').value.trim(),note:$('#orderNote').value.trim()},items:cart.map(i=>{const p=productById(i.id);return {id:i.id,name:p.name,qty:i.qty,variant:i.variant,price:p.price||null,photoName:i.photoName||'',customNote:i.note||''}}),subtotal:totals.needsQuote?null:totals.total,needsQuote:totals.needsQuote,disclaimer:'此為本機測試訂單，不代表已傳送給商家、付款或正式成立。'};const orders=getOrders();orders.unshift(order);saveOrders(orders);lastOrder=order;saveCart([]);location.hash='#success/'+order.id;});}
-function renderSuccess(id){const order=lastOrder&&lastOrder.id===id?lastOrder:getOrders().find(o=>o.id===id);if(!order){renderHome();return}app.innerHTML=`<section class="page-wrap"><div class="success-card"><div class="success-icon">✓</div><h1>測試訂單已建立</h1><p>表單已在目前瀏覽器建立測試記錄。<br><strong>這不代表賣家已收到訂單，也沒有完成付款。</strong></p><div class="order-id">訂單編號：${html(order.id)}</div><p>商品項目：${order.items.map(i=>html(i.name)+' × '+i.qty).join('、')}<br>聯絡人：${html(order.customer.name)}<br>訂單狀態：${html(order.status)}<br>金額：${order.subtotal===null?'待確認報價':'NT$ '+Number(order.subtotal).toLocaleString('zh-TW')}</p><div class="hero-buttons" style="justify-content:center"><button class="btn btn-dark" id="downloadOrder">下載這筆測試訂單 JSON</button><a class="btn btn-light" href="#home">返回商城</a></div><p style="margin-top:19px">要開始真正接單，下一步要把訂單儲存到雲端並串接通知與金流服務。</p></div></section>`;$('#downloadOrder').addEventListener('click',()=>downloadFile(`order-${order.id}.json`,JSON.stringify(order,null,2),'application/json'));}
+function renderCheckout(){const cart=getCart();if(!cart.length){renderCart();return}const t=cartTotals(cart);app.innerHTML=`<section class="page-wrap"><h1 class="page-title">填寫訂購資料</h1><p class="page-intro">請填寫聯絡方式及配送資訊。送出後會將訂單儲存至商城雲端資料庫；目前尚未串接線上付款。</p><form id="checkoutForm" class="checkout-grid"><div class="panel"><h2 class="form-section-title">聯絡與配送資料</h2><div class="two-col"><div class="field"><label for="custName">姓名／收件人 *</label><input id="custName" name="name" autocomplete="name" required placeholder="請填寫姓名"></div><div class="field"><label for="custPhone">聯絡電話 *</label><input id="custPhone" name="phone" autocomplete="tel" required inputmode="tel" placeholder="09xx-xxx-xxx"></div></div><div class="field"><label for="custEmail">電子郵件（選填）</label><input id="custEmail" type="email" autocomplete="email" placeholder="name@example.com"></div><div class="field"><label for="shipMethod">配送方式 *</label><select id="shipMethod" required><option value="">請選擇配送方式</option><option>宅配（運費待確認）</option><option>超商取貨（需確認商品尺寸與平台支援）</option><option>其他／與賣家確認</option></select></div><div class="field"><label for="custAddress">配送地址／取貨備註 *</label><input id="custAddress" required autocomplete="street-address" placeholder="請填寫可聯絡的配送資訊"></div><div class="field"><label for="orderNote">整筆訂單備註（選填）</label><textarea id="orderNote" placeholder="例如希望聯絡的時段、分批寄送需求"></textarea></div><label class="checkbox-row"><input type="checkbox" id="termsOk" required><span>我已確認商品內容與圖片使用權，並了解送出的是訂單／詢價申請，尚未付款，正式報價及製作須由商家確認。*</span></label><button class="btn btn-dark full" type="submit">送出測試訂單／詢價單</button><p class="muted" style="font-size:10px;line-height:1.8">請勿在此測試網站輸入信用卡資料或其他不必要的敏感資訊。</p></div><aside class="panel"><h2 class="form-section-title">你的商品</h2>${cart.map(i=>{const p=productById(i.id);return `<div class="summary-row"><span>${html(p.name)} × ${i.qty}</span><b>${p.price?'NT$ '+(p.price*i.qty).toLocaleString('zh-TW'):'待報價'}</b></div>`}).join('')}<div class="summary-row"><span class="muted">運費</span><span>待確認</span></div><div class="summary-row total"><span>商品小計</span><span>${t.needsQuote?'待報價':'NT$ '+t.total.toLocaleString('zh-TW')}</span></div><div class="notice-box">訂單會先儲存至商城雲端資料庫。客製圖片目前仍只是本機預覽，尚未上傳；線上付款及配送流程尚未啟用。</div><a href="#cart" class="btn btn-light full">返回購物車修改</a></aside></form></section>`;
+const checkoutForm = $('#checkoutForm');
+checkoutForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+
+  const supabaseUrl = String(SUPABASE_CONFIG.url || '').trim().replace(/\/+$/, '');
+  const publishableKey = String(SUPABASE_CONFIG.publishableKey || '').trim();
+  if (!supabaseUrl || !publishableKey || publishableKey.includes('REPLACE_WITH')) {
+    toast('尚未設定 Supabase 網址與 Publishable key，請先編輯 supabase-config.js');
+    return;
+  }
+
+  const cart = getCart();
+  if (!cart.length) {
+    toast('購物車是空的，請先選擇商品');
+    return;
+  }
+
+  const submitButton = checkoutForm.querySelector('button[type="submit"]');
+  const originalButtonText = submitButton.textContent;
+  submitButton.disabled = true;
+  submitButton.textContent = '正在送出雲端訂單…';
+
+  const customer = {
+    name: $('#custName').value.trim(),
+    phone: $('#custPhone').value.trim(),
+    email: $('#custEmail').value.trim(),
+    shipping: $('#shipMethod').value,
+    address: $('#custAddress').value.trim(),
+    note: $('#orderNote').value.trim(),
+  };
+
+  const items = cart.map((item) => {
+    const product = productById(item.id);
+    return {
+      id: item.id,
+      name: product ? product.name : item.id,
+      qty: Number(item.qty),
+      variant: item.variant || '標準規格',
+      photoName: item.photoName || '',
+      customNote: item.note || '',
+    };
+  });
+
+  try {
+    const response = await fetch(`${supabaseUrl}/functions/v1/create-order`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': publishableKey,
+        'Authorization': `Bearer ${publishableKey}`,
+      },
+      body: JSON.stringify({ customer, items }),
+    });
+
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.ok || !result.order) {
+      throw new Error(result.message || `訂單送出失敗（HTTP ${response.status}）`);
+    }
+
+    const saved = result.order;
+    lastOrder = {
+      id: saved.order_number,
+      orderNumber: saved.order_number,
+      createdAt: saved.created_at,
+      status: saved.status,
+      customer,
+      items,
+      subtotal: null,
+      needsQuote: true,
+      isCloud: true,
+    };
+
+    // Only clear the cart after the cloud service confirms successful storage.
+    saveCart([]);
+    location.hash = '#success/' + encodeURIComponent(saved.order_number);
+  } catch (error) {
+    console.error('Cloud order submission failed:', error);
+    toast(error.message || '目前無法送出訂單，請稍後再試');
+  } finally {
+    if (checkoutForm.isConnected) {
+      submitButton.disabled = false;
+      submitButton.textContent = originalButtonText;
+    }
+  }
+});
+}
+function renderSuccess(id) {
+  let order = lastOrder && (lastOrder.id === id || lastOrder.orderNumber === id)
+    ? lastOrder
+    : getOrders().find((savedOrder) => savedOrder.id === id);
+
+  // The order number is in the URL, so a refreshed cloud success page can still show a safe confirmation.
+  if (!order && String(id).startsWith('SANSI-')) {
+    app.innerHTML = `<section class="page-wrap"><div class="success-card"><div class="success-icon">✓</div><h1>雲端訂單已送出</h1><p>你的訂單已成功傳送並儲存至三氏國際商城雲端資料庫。商家確認報價前，尚未完成付款或正式製作。</p><div class="order-id">訂單編號：${html(id)}</div><p>訂單狀態：待商家確認報價</p><div class="hero-buttons" style="justify-content:center"><a class="btn btn-dark" href="#home">返回商城</a></div></div></section>`;
+    return;
+  }
+
+  if (!order) {
+    renderHome();
+    return;
+  }
+
+  const orderNumber = order.orderNumber || order.order_number || order.id;
+  const itemText = (order.items || []).map((item) =>
+    html(item.name || item.product_name || item.id) + ' × ' + Number(item.qty || item.quantity || 0)
+  ).join('、');
+  const cloudOrder = order.isCloud === true;
+  const statusText = cloudOrder
+    ? '待商家確認報價'
+    : (order.status || '本機測試記錄');
+
+  app.innerHTML = `<section class="page-wrap"><div class="success-card"><div class="success-icon">✓</div><h1>${cloudOrder ? '雲端訂單已送出' : '測試訂單已建立'}</h1><p>${cloudOrder ? '你的訂單已成功傳送並儲存至三氏國際商城雲端資料庫。商家確認報價前，尚未完成付款或正式製作。' : '這是先前保存在目前瀏覽器的測試訂單，不代表商家已收到。'}</p><div class="order-id">訂單編號：${html(orderNumber)}</div><p>商品項目：${itemText}<br>聯絡人：${html(order.customer?.name || '')}<br>訂單狀態：${html(statusText)}<br>金額：待商家確認報價</p><div class="hero-buttons" style="justify-content:center">${cloudOrder ? '' : '<button class="btn btn-dark" id="downloadOrder">下載這筆測試訂單 JSON</button>'}<a class="btn btn-light" href="#home">返回商城</a></div></div></section>`;
+
+  if (!cloudOrder) {
+    $('#downloadOrder')?.addEventListener('click', () =>
+      downloadFile(`order-${order.id}.json`, JSON.stringify(order, null, 2), 'application/json')
+    );
+  }
+}
 function renderNotFound(){app.innerHTML='<section class="page-wrap"><div class="empty-state"><div class="emoji">✦</div><h2>找不到這個頁面</h2><p>請返回商城首頁繼續探索。</p><a class="btn btn-dark" href="#home">回首頁</a></div></section>'}
 function downloadFile(filename,content,type){const blob=new Blob([content],{type});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000)}
-function exportOrders(){downloadFile('unyuhuan-test-orders.json',JSON.stringify(getOrders(),null,2),'application/json');toast('已匯出目前瀏覽器內的測試訂單')}
+function exportOrders(){downloadFile('unyuhuan-test-orders.json',JSON.stringify(getOrders(),null,2),'application/json');toast('已匯出舊版本機測試訂單；不含 Supabase 雲端訂單')}
 function exportProducts(){downloadFile('unyuhuan-product-settings.json',JSON.stringify(products,null,2),'application/json');toast('已匯出商品設定')}
 function renderAdmin(){const box=$('#adminProducts');box.innerHTML=`<div class="admin-catalog-tools"><input id="adminProductSearch" type="search" placeholder="搜尋商品名稱、規格或材質…"><select id="adminCategoryFilter"><option value="">全部分類</option>${categories.slice(1).map(c=>`<option value="${html(c)}">${html(c)}</option>`).join('')}</select><span id="adminResultCount" class="muted"></span></div><div id="adminProductRows"></div><button id="adminLoadMore" type="button" class="btn btn-light admin-load-more">顯示更多商品</button>`;
 const search=$('#adminProductSearch'), category=$('#adminCategoryFilter'), list=$('#adminProductRows'), count=$('#adminResultCount'), more=$('#adminLoadMore');let shown=30;
@@ -54,7 +172,7 @@ list.querySelectorAll('[data-image-file]').forEach(input=>input.addEventListener
 list.querySelectorAll('[data-reset-poster]').forEach(btn=>btn.addEventListener('click',()=>{const row=btn.closest('[data-admin-id]');const def=productDefaults.find(x=>x.id===row.dataset.adminId);if(!def)return;row.dataset.pendingPoster=def.poster;row.querySelector('.admin-product-preview').src=def.poster;row.querySelector('[data-image-status]').textContent='已選擇預設圖片（按「儲存商品」後生效）'}));
 list.querySelectorAll('[data-save-product]').forEach(btn=>btn.addEventListener('click',()=>{const id=btn.dataset.saveProduct,row=list.querySelector(`[data-admin-id="${id}"]`),p=productById(id),snapshot={...p};row.querySelectorAll('[data-field]').forEach(el=>{const key=el.dataset.field;if(key==='price'){const v=el.value.trim();p.price=(v!==''&&Number(v)>0)?Number(v):null}else if(key==='variants'){p.variants=el.value.split(',').map(v=>v.trim()).filter(Boolean)}else p[key]=el.value.trim()});if(row.dataset.pendingPoster)p.poster=row.dataset.pendingPoster;if(!saveProducts()){Object.assign(p,snapshot);toast('儲存空間不足。請改用較小圖片，或匯出商品設定備份後再試。');return}$('#saved-'+id).textContent='已儲存 ✓';row.querySelector('[data-image-status]').textContent=row.dataset.pendingPoster?'圖片已儲存（本機）':'目前使用現有圖片';delete row.dataset.pendingPoster;toast('商品資料與圖片已儲存在本機');setTimeout(()=>{const indicator=$('#saved-'+id);if(indicator)indicator.textContent=''},2200)}));}
 search.addEventListener('input',()=>{shown=30;renderRows()});category.addEventListener('change',()=>{shown=30;renderRows()});more.addEventListener('click',()=>{shown+=30;renderRows()});renderRows();renderOrdersAdmin()}
-function renderOrdersAdmin(){const box=$('#ordersList'),orders=getOrders();if(!orders.length){box.innerHTML='<p class="muted" style="font-size:11px">目前沒有測試訂單。送出結帳表單後會顯示於這裡（只限這個瀏覽器）。</p>';return}box.innerHTML=orders.slice(0,15).map(o=>`<div class="order-line"><b>${html(o.id)}</b>　<span class="muted">${new Date(o.createdAt).toLocaleString('zh-TW')}</span><br>${html(o.customer.name)}｜${html(o.customer.phone)}｜${html(o.status)}<br>${o.items.map(i=>html(i.name)+' × '+i.qty).join('、')}<br>金額：${o.subtotal===null?'待報價':'NT$ '+o.subtotal}</div>`).join('')}
+function renderOrdersAdmin(){const box=$('#ordersList'),orders=getOrders();if(!orders.length){box.innerHTML='<p class="muted" style="font-size:11px">目前沒有舊版本機測試訂單。新訂單已儲存在 Supabase，會在後續獨立訂單後台管理。</p>';return}box.innerHTML=orders.slice(0,15).map(o=>`<div class="order-line"><b>${html(o.id)}</b>　<span class="muted">${new Date(o.createdAt).toLocaleString('zh-TW')}</span><br>${html(o.customer.name)}｜${html(o.customer.phone)}｜${html(o.status)}<br>${o.items.map(i=>html(i.name)+' × '+i.qty).join('、')}<br>金額：${o.subtotal===null?'待報價':'NT$ '+o.subtotal}</div>`).join('')}
 $('#openAdmin').addEventListener('click',()=>{renderAdmin();$('#adminDialog').showModal()});$('#adminDialog').addEventListener('close',()=>route());$('#exportOrders').addEventListener('click',exportOrders);$('#exportProducts').addEventListener('click',exportProducts);$('#resetProducts').addEventListener('click',()=>{if(confirm('確定將商品設定還原為預設內容？已設定的價格與規格會被清除。')){products=productDefaults.map(p=>({...p}));saveProducts();renderAdmin();toast('已還原預設商品設定')}});$('#importProducts').addEventListener('change',async e=>{const file=e.target.files?.[0];if(!file)return;try{const incoming=JSON.parse(await file.text());if(!Array.isArray(incoming))throw new Error('格式錯誤');products=productDefaults.map(d=>{const x=incoming.find(x=>x.id===d.id)||{};const m={...d};for(const k of ['price','size','material','customization','variants','delivery'])if(Object.prototype.hasOwnProperty.call(x,k))m[k]=x[k];if(typeof x.poster==='string'&&x.poster.startsWith('data:image/'))m.poster=x.poster;return m});saveProducts();renderAdmin();toast('商品設定匯入完成')}catch(err){toast('匯入失敗：請選擇有效的商品設定 JSON')}e.target.value=''});$('#menuBtn').addEventListener('click',()=>$('.main-nav').classList.toggle('open'));document.querySelectorAll('.main-nav a').forEach(a=>a.addEventListener('click',()=>$('.main-nav').classList.remove('open')));
 function route(){const [page,arg]=urlHash();if(page==='product')renderProduct(arg);else if(page==='cart')renderCart();else if(page==='checkout')renderCheckout();else if(page==='success')renderSuccess(arg);else if(page==='category'){currentCategory=categories.includes(arg)?arg:'全部商品';searchText='';renderHome();setTimeout(()=>document.querySelector('#products')?.scrollIntoView(),30)}else if(['products','videos','howto','faq'].includes(page)){renderHome();setTimeout(()=>document.getElementById(page)?.scrollIntoView({behavior:'smooth'}),30)}else{currentCategory='全部商品';renderHome()}updateCartCount();}
 window.addEventListener('hashchange',route);route();
