@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#201b32">
+<title>三氏國際商城｜商品圖片雲端同步</title>
+<style>
+:root{font-family:Arial,"Microsoft JhengHei",sans-serif;color:#242137;background:#f7f5f1}
+*{box-sizing:border-box}body{margin:0;padding:24px;min-height:100vh}
+main{max-width:820px;margin:30px auto;background:#fff;padding:28px;border-radius:20px;box-shadow:0 16px 50px #211a3210}
+h1{font-size:26px;margin:0 0 8px}p{color:#686477;line-height:1.8;font-size:14px}
+.field{margin:18px 0}label{display:block;font-weight:700;font-size:14px;margin-bottom:8px}
+input[type=email],input[type=password],input[type=file]{width:100%;padding:12px;border:1px solid #ddd8e5;border-radius:10px;background:white;font-size:14px}
+button{border:0;border-radius:10px;background:#29233f;color:#fff;font-weight:700;padding:14px 18px;cursor:pointer;width:100%;font-size:14px;margin-top:8px}
+button:disabled{opacity:.55;cursor:not-allowed}.muted{font-size:12px;color:#888397}
+.note{background:#f2eff8;padding:14px;border-radius:12px;margin:18px 0;font-size:13px;line-height:1.8}
+.warning{background:#fff3dc;color:#705526}.progress{height:12px;background:#eeeaf4;border-radius:99px;overflow:hidden;margin:12px 0}.bar{height:100%;width:0;background:#23865a;transition:width .15s}
+#log{white-space:pre-wrap;overflow-wrap:anywhere;background:#211d30;color:#f5f1ff;border-radius:12px;padding:16px;min-height:110px;font-size:13px;line-height:1.75;max-height:360px;overflow:auto}
+.row{display:flex;justify-content:space-between;gap:12px;align-items:center}.hidden{display:none}
+@media(max-width:600px){body{padding:12px}main{margin:10px auto;padding:19px;border-radius:15px}h1{font-size:22px}}
+</style>
+</head>
+<body>
+<main>
+  <h1>三氏國際商城</h1>
+  <h2>商品圖片雲端同步工具</h2>
+  <p>將原有 assets/catalog 資料夾內被 256 項商品使用的 PNG 圖片上傳至 Supabase Storage，並更新商品圖片網址。</p>
+  <div class="note warning"><b>執行前請先確認：</b><br>1. 請先在電腦解壓縮原本的 assets.rar。<br>2. 本工具預期在 assets/catalog 找到 cat-001.png 至 cat-167.png（實際以雲端商品資料的圖片路徑為準）。<br>3. 只處理被商品使用的圖片；不會刪除原始檔案、商品或客戶訂單。<br>4. 每張圖片不得超過 Storage Bucket 的 5 MB 限制。</div>
+
+  <div class="field">
+    <label for="email">管理員 Email</label>
+    <input id="email" type="email" autocomplete="username" placeholder="已授權的管理員 Email" required>
+  </div>
+  <div class="field">
+    <label for="password">管理員密碼</label>
+    <input id="password" type="password" autocomplete="current-password" placeholder="Supabase Auth 登入密碼" required>
+  </div>
+  <div class="field">
+    <label for="folder">選擇解壓縮後的 assets/catalog 資料夾</label>
+    <input id="folder" type="file" webkitdirectory directory multiple accept=".png,image/png">
+    <p class="muted">請選擇 catalog 資料夾本身。Chrome 會讀取資料夾中的檔案，不會將檔案傳到其他地方，直到你按下開始同步。</p>
+  </div>
+  <button id="start">登入並開始圖片雲端同步</button>
+  <div class="row" style="margin-top:20px"><b>處理進度</b><span id="progressText">尚未開始</span></div>
+  <div class="progress"><div class="bar" id="bar"></div></div>
+  <pre id="log">等待操作……</pre>
+  <p class="muted">安全提醒：本工具只使用 supabase-config.js 中的 Publishable key，管理員密碼只在本次瀏覽器登入時使用，不會寫入檔案或顯示在紀錄中。</p>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="./supabase-config.js"></script>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const logBox = $('log');
+  const button = $('start');
+  const BUCKET = 'product-images';
+  const MAX_FILE_BYTES = 5 * 1024 * 1024;
+
+  function log(message) {
+    logBox.textContent += '\n' + message;
+    logBox.scrollTop = logBox.scrollHeight;
+  }
+  function setProgress(done, total, label) {
+    const pct = total ? Math.round(done / total * 100) : 0;
+    $('bar').style.width = pct + '%';
+    $('progressText').textContent = `${label} ${done} / ${total}（${pct}%）`;
+  }
+  function posterNumber(poster) {
+    const match = String(poster || '').match(/^assets\/catalog\/cat-(\d+)\.(?:jpg|jpeg|png|webp)$/i);
+    return match ? Number(match[1]) : null;
+  }
+
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    logBox.textContent = '開始檢查設定……';
+    $('bar').style.width = '0%';
+    $('progressText').textContent = '準備中';
+    let client;
+
+    try {
+      const cfg = window.SANSI_SUPABASE_CONFIG || {};
+      const url = String(cfg.url || '').trim().replace(/\/+$/, '');
+      const key = String(cfg.publishableKey || '').trim();
+      if (!window.supabase || !url || !key || key.includes('REPLACE_WITH')) {
+        throw new Error('找不到有效的 Supabase 設定，請檢查 supabase-config.js');
+      }
+
+      const selectedFiles = Array.from($('folder').files || []);
+      if (!selectedFiles.length) throw new Error('請先選擇解壓縮後的 assets/catalog 資料夾');
+
+      const fileMap = new Map();
+      for (const file of selectedFiles) {
+        const m = file.name.match(/^cat-(\d+)\.png$/i);
+        if (m) fileMap.set(Number(m[1]), file);
+      }
+      log(`已選取資料夾檔案：${selectedFiles.length} 個`);
+      log(`其中符合 cat-###.png 命名：${fileMap.size} 張`);
+
+      client = window.supabase.createClient(url, key, {
+        auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
+      });
+
+      log('正在登入管理員……');
+      const { error: loginError } = await client.auth.signInWithPassword({
+        email: $('email').value.trim(),
+        password: $('password').value
+      });
+      if (loginError) throw new Error('登入失敗：' + loginError.message);
+
+      const { data: adminResult, error: adminError } = await client.rpc('is_sansi_admin');
+      if (adminError) throw new Error('管理員授權檢查失敗：' + adminError.message);
+      if (adminResult !== true) throw new Error('此帳號沒有三氏商城管理員授權');
+      log('管理員驗證成功');
+
+      log('正在讀取雲端商品資料……');
+      const { data: productRows, error: productError } = await client
+        .from('products').select('id,data,updated_at').order('id');
+      if (productError) throw new Error('讀取商品資料失敗：' + productError.message);
+      if (!productRows || !productRows.length) throw new Error('雲端 products 資料表沒有商品');
+
+      const localRows = productRows.filter(row => posterNumber(row.data?.poster) !== null);
+      const neededNumbers = [...new Set(localRows.map(row => posterNumber(row.data.poster)))].sort((a,b) => a-b);
+      log(`雲端商品總數：${productRows.length}`);
+      log(`使用本機目錄圖片的商品：${localRows.length}`);
+      log(`需要上傳的不同圖片：${neededNumbers.length} 張`);
+
+      if (!neededNumbers.length) throw new Error('沒有找到 assets/catalog/cat-###.jpg/png 圖片路徑');
+
+      const missing = neededNumbers.filter(n => !fileMap.has(n));
+      if (missing.length) {
+        throw new Error('本機資料夾缺少以下圖片：' + missing.map(n => `cat-${String(n).padStart(3,'0')}.png`).join('、'));
+      }
+
+      const oversized = neededNumbers.filter(n => fileMap.get(n).size > MAX_FILE_BYTES);
+      if (oversized.length) {
+        throw new Error('以下圖片超過 5 MB：' + oversized.map(n => `cat-${String(n).padStart(3,'0')}.png`).join('、') + '。請先縮小圖片再重試。');
+      }
+
+      const confirmText = `即將上傳 ${neededNumbers.length} 張圖片，並更新 ${localRows.length} 筆商品圖片網址。\n原有商品及訂單不會刪除。\n是否繼續？`;
+      if (!window.confirm(confirmText)) {
+        log('使用者取消操作，沒有開始上傳。');
+        await client.auth.signOut();
+        return;
+      }
+
+      const publicUrls = new Map();
+      for (let i = 0; i < neededNumbers.length; i++) {
+        const n = neededNumbers[i];
+        const filename = `cat-${String(n).padStart(3,'0')}.png`;
+        const objectPath = `catalog/${filename}`;
+        const file = fileMap.get(n);
+        const { error: uploadError } = await client.storage.from(BUCKET).upload(objectPath, file, {
+          cacheControl: '31536000',
+          upsert: true,
+          contentType: 'image/png'
+        });
+        if (uploadError) throw new Error(`上傳 ${filename} 失敗：${uploadError.message}`);
+        const { data: publicData } = client.storage.from(BUCKET).getPublicUrl(objectPath);
+        if (!publicData?.publicUrl) throw new Error(`無法取得 ${filename} 的公開圖片網址`);
+        publicUrls.set(n, publicData.publicUrl);
+        setProgress(i + 1, neededNumbers.length, '圖片上傳');
+      }
+      log('全部需要的圖片已上傳至 Storage。');
+
+      log('正在更新商品 JSONB 圖片網址……');
+      const updates = localRows.map(row => {
+        const n = posterNumber(row.data.poster);
+        return {
+          id: row.id,
+          data: { ...row.data, poster: publicUrls.get(n) },
+          updated_at: new Date().toISOString()
+        };
+      });
+
+      for (let i = 0; i < updates.length; i += 40) {
+        const batch = updates.slice(i, i + 40);
+        const { error: updateError } = await client.from('products').upsert(batch, { onConflict: 'id' });
+        if (updateError) throw new Error(`更新商品資料失敗（第 ${i + 1} 筆起）：${updateError.message}`);
+        setProgress(Math.min(i + batch.length, updates.length), updates.length, '商品網址更新');
+      }
+
+      log('--------------------------------');
+      log('圖片雲端同步完成！');
+      log(`雲端商品總數：${productRows.length} 項`);
+      log(`本次上傳圖片：${neededNumbers.length} 張`);
+      log(`更新商品圖片網址：${updates.length} 項`);
+      log('原本 3 筆外部圖片網址未更動。');
+      log('請回商城重新整理頁面，並用另一台裝置確認圖片。');
+    } catch (error) {
+      log('發生錯誤：' + (error?.message || '未知錯誤'));
+      log('若上傳中途失敗，可以重新執行；圖片採用相同檔案路徑與 upsert，已成功上傳的圖片可覆寫重試。');
+    } finally {
+      if (client) {
+        try { await client.auth.signOut(); } catch (_) {}
+      }
+      $('password').value = '';
+      button.disabled = false;
+    }
+  });
+})();
+</script>
+</body>
+</html>
