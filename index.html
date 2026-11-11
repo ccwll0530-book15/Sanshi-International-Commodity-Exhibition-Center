@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<div class="demo-banner"><strong>雲端接單測試版</strong>　新訂單會儲存至 Supabase；商品設定與商品圖片預覽仍保存在目前瀏覽器。尚未啟用線上付款及客製圖片雲端上傳。</div>
+<div class="demo-banner"><strong>雲端商品管理版</strong>　商品資料及商品圖片由 Supabase 雲端讀取；管理員修改並儲存後，其他訪客重新整理即可看到更新。線上付款及客戶客製照片雲端上傳仍未啟用。</div>
 <header class="site-header">
   <a class="brand" href="#home" aria-label="回商城首頁"><img class="brand-logo" src="assets/brand-logo.jpg" alt="三氏國際商城 LOGO"><span><b>三氏國際商城</b><small>PERSONALIZED GOODS</small></span></a>
   <nav class="main-nav"><a href="#home">商城首頁</a><a href="#products">全部商品</a><a href="#videos">商品影片</a><a href="#howto">客製流程</a><a href="#faq">常見問題</a></nav>
@@ -17,6 +17,6 @@
 <main id="app" tabindex="-1"></main>
 <footer class="site-footer"><div class="footer-inner"><div><a class="brand footer-brand" href="#home"><img class="brand-logo" src="assets/brand-logo.jpg" alt="三氏國際商城 LOGO"><span><b>三氏國際商城</b><small>PERSONALIZED GOODS</small></span></a><p>把喜歡的圖片，變成專屬於你的商品。</p></div><div><b>購物須知</b><a href="#videos">商品影片</a><a href="#howto">客製流程</a><a href="#faq">常見問題</a></div><div><b>服務提醒</b><p>下單前請確認圖片授權、尺寸、材質、價格及交期。</p><p>此版本為可測試的前端原型。</p></div></div><div class="copyright">© 三氏國際商城｜客製化商品商城</div></footer>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
-<dialog id="adminDialog" class="admin-dialog"><form method="dialog" class="dialog-head"><div><span class="eyebrow">LOCAL SETUP</span><h2>商品設定與本機資料匯出</h2></div><button class="close-btn" value="close" aria-label="關閉">×</button></form><div class="admin-note">商品設定仍儲存在目前瀏覽器，不會自動同步其他裝置。新客戶訂單已儲存在 Supabase；下方只列出舊版本機測試訂單，不是雲端訂單。</div><div class="admin-toolbar"><button id="exportOrders" class="btn btn-dark">匯出測試訂單 JSON</button><button id="exportProducts" class="btn btn-light">匯出商品設定 JSON</button><label class="btn btn-light file-button">匯入商品設定<input id="importProducts" type="file" accept="application/json"></label><button id="resetProducts" class="btn btn-danger-light">還原預設</button></div><div id="adminProducts" class="admin-products"></div><div class="admin-orders"><h3>舊版本機測試訂單（不含雲端訂單）</h3><div id="ordersList"></div></div></dialog>
-<script src="products.js"></script><script src="supabase-config.js"></script><script src="app.js"></script><script src="language.js"></script>
+<dialog id="adminDialog" class="admin-dialog"><form method="dialog" class="dialog-head"><div><span class="eyebrow">CLOUD PRODUCT MANAGEMENT</span><h2>商品設定與雲端同步</h2></div><button class="close-btn" value="close" aria-label="關閉">×</button></form><div class="admin-note">商品資料由 Supabase 雲端讀取。只有已授權的管理員可以修改商品及上傳圖片；儲存成功後，所有訪客重新整理即可看到最新內容。</div><div class="admin-toolbar" id="adminToolbar" hidden><button id="exportOrders" class="btn btn-dark">匯出本機測試訂單</button><button id="exportProducts" class="btn btn-light">匯出雲端商品 JSON</button><label class="btn btn-light file-button">匯入商品設定<input id="importProducts" type="file" accept="application/json"></label><button id="reloadCloudProducts" class="btn btn-light" type="button">重新讀取雲端</button><button id="adminLogout" class="btn btn-danger-light" type="button">管理員登出</button></div><div id="adminProducts" class="admin-products"></div><div class="admin-orders"><h3>舊版本機測試訂單（不含雲端訂單）</h3><div id="ordersList"></div></div></dialog>
+<script src="products.js"></script><script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script><script src="supabase-config.js"></script><script src="app.js?v=cloud-products-1"></script><script src="language.js"></script>
 </body></html>

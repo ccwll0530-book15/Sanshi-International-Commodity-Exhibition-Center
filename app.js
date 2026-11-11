@@ -2,6 +2,14 @@
 const $ = s => document.querySelector(s);
 const app = $('#app');
 const SUPABASE_CONFIG = window.SANSI_SUPABASE_CONFIG || {};
+const supabaseClient = (() => {
+  const url = String(SUPABASE_CONFIG.url || '').trim().replace(/\/+$/, '');
+  const key = String(SUPABASE_CONFIG.publishableKey || '').trim();
+  if (!window.supabase || !url || !key || key.includes('REPLACE_WITH')) return null;
+  return window.supabase.createClient(url, key, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+  });
+})();
 const productDefaults = window.CUSTOM_PRODUCTS.map(p => ({...p}));
 const STORAGE = {products:'unyuhuan_products_v1',cart:'unyuhuan_cart_v1',orders:'unyuhuan_orders_v1'};
 const categories=['全部商品',...(window.SANSI_CATEGORIES||Array.from(new Set(window.CUSTOM_PRODUCTS.map(p=>p.category))))];
@@ -10,7 +18,70 @@ let currentCategory='全部商品', searchText='', selectedFile=null, lastOrder=
 function safeParse(v,fallback){try{return JSON.parse(v)||fallback}catch{return fallback}}
 function loadProducts(){const stored=safeParse(localStorage.getItem(STORAGE.products),null);if(!Array.isArray(stored))return productDefaults.map(p=>({...p})); return productDefaults.map(def=>{const saved=stored.find(x=>x.id===def.id)||{};const merged={...def}; for(const key of ['price','size','material','customization','variants','delivery']) if(Object.prototype.hasOwnProperty.call(saved,key)) merged[key]=saved[key]; if(typeof saved.poster==='string' && saved.poster.startsWith('data:image/')) merged.poster=saved.poster; return merged;});}
 let products=loadProducts();
-function saveProducts(){try{localStorage.setItem(STORAGE.products,JSON.stringify(products));return true}catch(error){console.error('Unable to save products to local storage',error);return false}}
+async function loadCloudProducts(){
+  if(!supabaseClient) throw new Error('Supabase 前端設定或 SDK 尚未載入');
+  const {data, error} = await supabaseClient
+    .from('products').select('id,data').order('id');
+  if(error) throw error;
+  if(!Array.isArray(data) || !data.length) throw new Error('雲端 products 資料表目前沒有商品');
+  const cloudMap = new Map(data.filter(row => row && row.id && row.data).map(row => [row.id, row.data]));
+  const defaultsById = new Set(productDefaults.map(p => p.id));
+  products = productDefaults.map(def => {
+    const cloud = cloudMap.get(def.id);
+    return cloud && typeof cloud === 'object' ? {...def, ...cloud, id:def.id} : {...def};
+  });
+  for(const row of data){
+    if(row && row.id && row.data && !defaultsById.has(row.id)){
+      products.push({...row.data, id:row.id});
+    }
+  }
+  return data.length;
+}
+function requireSupabase(){
+  if(!supabaseClient) throw new Error('Supabase 設定尚未載入，請檢查 supabase-config.js 與 index.html');
+  return supabaseClient;
+}
+async function verifyAdmin(){
+  const client = requireSupabase();
+  const {data:{session}, error:sessionError} = await client.auth.getSession();
+  if(sessionError) throw sessionError;
+  if(!session) return false;
+  const {data, error} = await client.rpc('is_sansi_admin');
+  if(error) throw error;
+  return data === true;
+}
+async function uploadProductPoster(productId, dataUrl){
+  const client = requireSupabase();
+  const blob = await (await fetch(dataUrl)).blob();
+  if(!['image/jpeg','image/png','image/webp'].includes(blob.type)){
+    throw new Error('圖片格式不支援，請使用 JPG、PNG 或 WebP');
+  }
+  if(blob.size > 5 * 1024 * 1024) throw new Error('壓縮後圖片仍超過 5 MB');
+  const safeId = String(productId).replace(/[^a-zA-Z0-9_-]/g, '-').slice(0,100);
+  const ext = blob.type === 'image/jpeg' ? 'jpg' : (blob.type === 'image/png' ? 'png' : 'webp');
+  const nonce = (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36));
+  const objectPath = `products/${safeId}/${Date.now()}-${nonce}.${ext}`;
+  const {error} = await client.storage.from('product-images').upload(objectPath, blob, {
+    cacheControl: '3600', upsert: false, contentType: blob.type
+  });
+  if(error) throw error;
+  const {data} = client.storage.from('product-images').getPublicUrl(objectPath);
+  if(!data || !data.publicUrl) throw new Error('圖片已上傳，但無法取得公開網址');
+  return data.publicUrl;
+}
+async function saveProductCloud(product, posterDataUrl){
+  const client = requireSupabase();
+  if(!(await verifyAdmin())) throw new Error('管理員登入已失效，請重新登入');
+  const updated = {...product};
+  if(posterDataUrl) updated.poster = await uploadProductPoster(updated.id, posterDataUrl);
+  const {error} = await client.from('products').upsert({
+    id: updated.id,
+    data: updated,
+    updated_at: new Date().toISOString()
+  }, {onConflict:'id'});
+  if(error) throw error;
+  return updated;
+}
 function compressProductImage(file){return new Promise((resolve,reject)=>{const allowed=['image/jpeg','image/png','image/webp'];if(!allowed.includes(file.type)){reject(new Error('請使用 JPG、PNG 或 WebP 圖片'));return}if(file.size>12*1024*1024){reject(new Error('圖片檔案需小於 12MB'));return}const reader=new FileReader();reader.onerror=()=>reject(new Error('無法讀取圖片'));reader.onload=()=>{const img=new Image();img.onerror=()=>reject(new Error('圖片格式無法讀取'));img.onload=()=>{const maxSide=720,scale=Math.min(1,maxSide/Math.max(img.naturalWidth,img.naturalHeight));const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(img.naturalWidth*scale));canvas.height=Math.max(1,Math.round(img.naturalHeight*scale));const ctx=canvas.getContext('2d');if(!ctx){reject(new Error('目前瀏覽器無法處理圖片'));return}ctx.drawImage(img,0,0,canvas.width,canvas.height);let data=canvas.toDataURL('image/webp',0.72);if(!data.startsWith('data:image/webp'))data=canvas.toDataURL('image/jpeg',0.72);if(data.length>900000)data=canvas.toDataURL('image/webp',0.56);resolve(data)};img.src=String(reader.result)};reader.readAsDataURL(file)})}
 function getCart(){return safeParse(localStorage.getItem(STORAGE.cart),[])}
 function saveCart(c){localStorage.setItem(STORAGE.cart,JSON.stringify(c));updateCartCount()}
@@ -163,17 +234,141 @@ function renderSuccess(id) {
 function renderNotFound(){app.innerHTML='<section class="page-wrap"><div class="empty-state"><div class="emoji">✦</div><h2>找不到這個頁面</h2><p>請返回商城首頁繼續探索。</p><a class="btn btn-dark" href="#home">回首頁</a></div></section>'}
 function downloadFile(filename,content,type){const blob=new Blob([content],{type});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000)}
 function exportOrders(){downloadFile('unyuhuan-test-orders.json',JSON.stringify(getOrders(),null,2),'application/json');toast('已匯出舊版本機測試訂單；不含 Supabase 雲端訂單')}
-function exportProducts(){downloadFile('unyuhuan-product-settings.json',JSON.stringify(products,null,2),'application/json');toast('已匯出商品設定')}
-function renderAdmin(){const box=$('#adminProducts');box.innerHTML=`<div class="admin-catalog-tools"><input id="adminProductSearch" type="search" placeholder="搜尋商品名稱、規格或材質…"><select id="adminCategoryFilter"><option value="">全部分類</option>${categories.slice(1).map(c=>`<option value="${html(c)}">${html(c)}</option>`).join('')}</select><span id="adminResultCount" class="muted"></span></div><div id="adminProductRows"></div><button id="adminLoadMore" type="button" class="btn btn-light admin-load-more">顯示更多商品</button>`;
-const search=$('#adminProductSearch'), category=$('#adminCategoryFilter'), list=$('#adminProductRows'), count=$('#adminResultCount'), more=$('#adminLoadMore');let shown=30;
-function renderRows(){const term=search.value.trim().toLowerCase(),cat=category.value;const matched=products.filter(p=>(!cat||p.category===cat)&&(!term||(p.name+' '+(p.enName||'')+' '+p.size+' '+p.material+' '+p.category).toLowerCase().includes(term)));const visible=matched.slice(0,shown);count.textContent=`顯示 ${visible.length} / ${matched.length} 項`;list.innerHTML=visible.map(p=>`<div class="admin-product-row" data-admin-id="${p.id}"><img class="admin-product-preview" src="${p.poster}" alt="${html(p.name)}" onerror="this.onerror=null;this.src='assets/posters/placeholder.svg'"><div class="admin-product-main"><h3>${html(p.name)}</h3><p class="admin-source-price">分類：${html(p.category)}　｜　規格：${html(p.size||'待確認')}<br>目錄原表價：${html(p.catalogPriceShort||'待確認')} ${p.sourcePage?`｜ PDF 第 ${p.sourcePage} 頁`:''}</p><div class="admin-image-tools"><label class="btn btn-light image-upload-label">選擇商品圖片<input data-image-file type="file" accept="image/jpeg,image/png,image/webp"></label><button class="btn btn-light" type="button" data-reset-poster>恢復預設圖片</button><span class="admin-image-status" data-image-status>目前使用現有圖片</span></div><p class="image-help">可上傳 JPG、PNG 或 WebP；圖片會縮小後保存在這台裝置的瀏覽器。其他訪客不會自動同步。</p><div class="admin-product-fields"><label>商城售價（台幣；空白代表待報價）<input data-field="price" type="number" min="0" step="1" value="${p.price??''}" placeholder="請輸入已確認售價"></label><label>分類<select data-field="category">${categories.slice(1).map(c=>`<option value="${html(c)}" ${c===p.category?'selected':''}>${html(c)}</option>`).join('')}</select></label><label>尺寸規格<input data-field="size" value="${html(p.size||'')}" placeholder="填入供應商尺寸"></label><label>材質規格<input data-field="material" value="${html(p.material||'')}" placeholder="填入供應商材質"></label><label>客製方式<input data-field="customization" value="${html(p.customization||'')}" placeholder="照片／圖案／位置等"></label><label>可選規格（逗號分隔）<input data-field="variants" value="${html(Array.isArray(p.variants)?p.variants.join(', '):(p.variants||''))}" placeholder="例如：A款, B款, L, XL"></label><label>製作／交期<input data-field="delivery" value="${html(p.delivery||'')}" placeholder="例如 5–7 個工作天"></label></div><details class="admin-catalog-details"><summary>原始目錄規格／價格</summary><div class="catalog-origin-text">${html(p.catalogDetails||'原表未列，待確認。')}</div></details></div><div class="save-row"><button class="btn btn-light" data-save-product="${p.id}">儲存商品</button><span class="save-indicator" id="saved-${p.id}"></span></div></div>`).join('')||'<p class="muted">找不到符合的商品。</p>';
-more.style.display=visible.length<matched.length?'inline-flex':'none';
-list.querySelectorAll('[data-image-file]').forEach(input=>input.addEventListener('change',async()=>{const file=input.files?.[0];if(!file)return;const row=input.closest('[data-admin-id]');const status=row.querySelector('[data-image-status]');status.textContent='正在處理圖片…';try{const data=await compressProductImage(file);row.dataset.pendingPoster=data;row.querySelector('.admin-product-preview').src=data;status.textContent='已選擇圖片（按「儲存商品」後生效）'}catch(error){status.textContent='圖片未更新';toast(error.message||'圖片處理失敗')}input.value=''}));
-list.querySelectorAll('[data-reset-poster]').forEach(btn=>btn.addEventListener('click',()=>{const row=btn.closest('[data-admin-id]');const def=productDefaults.find(x=>x.id===row.dataset.adminId);if(!def)return;row.dataset.pendingPoster=def.poster;row.querySelector('.admin-product-preview').src=def.poster;row.querySelector('[data-image-status]').textContent='已選擇預設圖片（按「儲存商品」後生效）'}));
-list.querySelectorAll('[data-save-product]').forEach(btn=>btn.addEventListener('click',()=>{const id=btn.dataset.saveProduct,row=list.querySelector(`[data-admin-id="${id}"]`),p=productById(id),snapshot={...p};row.querySelectorAll('[data-field]').forEach(el=>{const key=el.dataset.field;if(key==='price'){const v=el.value.trim();p.price=(v!==''&&Number(v)>0)?Number(v):null}else if(key==='variants'){p.variants=el.value.split(',').map(v=>v.trim()).filter(Boolean)}else p[key]=el.value.trim()});if(row.dataset.pendingPoster)p.poster=row.dataset.pendingPoster;if(!saveProducts()){Object.assign(p,snapshot);toast('儲存空間不足。請改用較小圖片，或匯出商品設定備份後再試。');return}$('#saved-'+id).textContent='已儲存 ✓';row.querySelector('[data-image-status]').textContent=row.dataset.pendingPoster?'圖片已儲存（本機）':'目前使用現有圖片';delete row.dataset.pendingPoster;toast('商品資料與圖片已儲存在本機');setTimeout(()=>{const indicator=$('#saved-'+id);if(indicator)indicator.textContent=''},2200)}));}
-search.addEventListener('input',()=>{shown=30;renderRows()});category.addEventListener('change',()=>{shown=30;renderRows()});more.addEventListener('click',()=>{shown+=30;renderRows()});renderRows();renderOrdersAdmin()}
-function renderOrdersAdmin(){const box=$('#ordersList'),orders=getOrders();if(!orders.length){box.innerHTML='<p class="muted" style="font-size:11px">目前沒有舊版本機測試訂單。新訂單已儲存在 Supabase，會在後續獨立訂單後台管理。</p>';return}box.innerHTML=orders.slice(0,15).map(o=>`<div class="order-line"><b>${html(o.id)}</b>　<span class="muted">${new Date(o.createdAt).toLocaleString('zh-TW')}</span><br>${html(o.customer.name)}｜${html(o.customer.phone)}｜${html(o.status)}<br>${o.items.map(i=>html(i.name)+' × '+i.qty).join('、')}<br>金額：${o.subtotal===null?'待報價':'NT$ '+o.subtotal}</div>`).join('')}
-$('#openAdmin').addEventListener('click',()=>{renderAdmin();$('#adminDialog').showModal()});$('#adminDialog').addEventListener('close',()=>route());$('#exportOrders').addEventListener('click',exportOrders);$('#exportProducts').addEventListener('click',exportProducts);$('#resetProducts').addEventListener('click',()=>{if(confirm('確定將商品設定還原為預設內容？已設定的價格與規格會被清除。')){products=productDefaults.map(p=>({...p}));saveProducts();renderAdmin();toast('已還原預設商品設定')}});$('#importProducts').addEventListener('change',async e=>{const file=e.target.files?.[0];if(!file)return;try{const incoming=JSON.parse(await file.text());if(!Array.isArray(incoming))throw new Error('格式錯誤');products=productDefaults.map(d=>{const x=incoming.find(x=>x.id===d.id)||{};const m={...d};for(const k of ['price','size','material','customization','variants','delivery'])if(Object.prototype.hasOwnProperty.call(x,k))m[k]=x[k];if(typeof x.poster==='string'&&x.poster.startsWith('data:image/'))m.poster=x.poster;return m});saveProducts();renderAdmin();toast('商品設定匯入完成')}catch(err){toast('匯入失敗：請選擇有效的商品設定 JSON')}e.target.value=''});$('#menuBtn').addEventListener('click',()=>$('.main-nav').classList.toggle('open'));document.querySelectorAll('.main-nav a').forEach(a=>a.addEventListener('click',()=>$('.main-nav').classList.remove('open')));
+function exportProducts(){downloadFile('sansi-cloud-products.json',JSON.stringify(products,null,2),'application/json');toast('已匯出目前載入的雲端商品資料')}
+function renderAdminLogin(message='請使用已授權的管理員帳號登入。'){
+  const box=$('#adminProducts');
+  $('#adminToolbar').hidden=true;
+  box.innerHTML=`<div class="panel admin-login-panel"><h3>管理員登入</h3><p class="muted">登入後才能新增、修改商品資料及上傳商品圖片。</p><form id="adminLoginForm"><div class="field"><label for="adminLoginEmail">管理員 Email</label><input id="adminLoginEmail" type="email" required autocomplete="username" placeholder="管理員 Email"></div><div class="field"><label for="adminLoginPassword">管理員密碼</label><input id="adminLoginPassword" type="password" required autocomplete="current-password" placeholder="Supabase Auth 密碼"></div><button class="btn btn-dark full" type="submit">登入商品管理</button></form><p id="adminLoginMessage" class="admin-auth-message">${html(message)}</p></div>`;
+  $('#adminLoginForm').addEventListener('submit',async e=>{
+    e.preventDefault();
+    const button=e.currentTarget.querySelector('button[type="submit"]');
+    const messageBox=$('#adminLoginMessage');
+    button.disabled=true;button.textContent='正在驗證……';messageBox.textContent='正在驗證管理員帳號與授權……';
+    try{
+      const client=requireSupabase();
+      const {error}=await client.auth.signInWithPassword({email:$('#adminLoginEmail').value.trim(),password:$('#adminLoginPassword').value});
+      if(error) throw error;
+      const {data:allowed,error:policyError}=await client.rpc('is_sansi_admin');
+      if(policyError) throw policyError;
+      if(allowed!==true){await client.auth.signOut();throw new Error('此帳號尚未取得三氏商城管理員授權');}
+      $('#adminLoginPassword').value='';
+      await renderAdminCatalog();
+    }catch(error){messageBox.textContent='登入失敗：'+(error.message||'請稍後再試');}
+    finally{button.disabled=false;button.textContent='登入商品管理';}
+  });
+}
+async function renderAdmin(){
+  const box=$('#adminProducts');
+  box.innerHTML='<p class="muted">正在檢查管理員登入狀態……</p>';
+  try{
+    if(!supabaseClient) throw new Error('Supabase SDK 或設定沒有載入');
+    const allowed=await verifyAdmin();
+    if(!allowed){renderAdminLogin();return;}
+    await renderAdminCatalog();
+  }catch(error){renderAdminLogin(error.message||'請先登入管理員帳號。');}
+}
+async function renderAdminCatalog(){
+  const allowed=await verifyAdmin();
+  if(!allowed){renderAdminLogin('登入狀態已失效，請重新登入。');return;}
+  const toolbar=$('#adminToolbar');toolbar.hidden=false;
+  const box=$('#adminProducts');
+  box.innerHTML=`<div class="admin-cloud-status"><span>資料來源：Supabase 雲端資料庫</span><span>商品共 ${products.length} 項</span></div><div class="admin-catalog-tools"><input id="adminProductSearch" type="search" placeholder="搜尋商品名稱、規格或材質…"><select id="adminCategoryFilter"><option value="">全部分類</option>${categories.slice(1).map(c=>`<option value="${html(c)}">${html(c)}</option>`).join('')}</select><span id="adminResultCount" class="muted"></span></div><div id="adminProductRows"></div><button id="adminLoadMore" type="button" class="btn btn-light admin-load-more">顯示更多商品</button>`;
+  const search=$('#adminProductSearch'),category=$('#adminCategoryFilter'),list=$('#adminProductRows'),count=$('#adminResultCount'),more=$('#adminLoadMore');
+  let shown=30;
+  function renderRows(){
+    const term=search.value.trim().toLowerCase(),cat=category.value;
+    const matched=products.filter(p=>(!cat||p.category===cat)&&(!term||(p.name+' '+(p.enName||'')+' '+p.size+' '+p.material+' '+p.category).toLowerCase().includes(term)));
+    const visible=matched.slice(0,shown);
+    count.textContent=`顯示 ${visible.length} / ${matched.length} 項`;
+    list.innerHTML=visible.map(p=>`<div class="admin-product-row" data-admin-id="${html(p.id)}"><img class="admin-product-preview" src="${html(p.poster||'assets/posters/placeholder.svg')}" alt="${html(p.name)}" onerror="this.onerror=null;this.src='assets/posters/placeholder.svg'"><div class="admin-product-main"><h3>${html(p.name)}</h3><p class="admin-source-price">分類：${html(p.category)}　｜　規格：${html(p.size||'待確認')}<br>目錄原表價：${html(p.catalogPriceShort||'待確認')} ${p.sourcePage?`｜ PDF 第 ${p.sourcePage} 頁`:''}</p><div class="admin-image-tools"><label class="btn btn-light image-upload-label">選擇新商品圖片<input data-image-file type="file" accept="image/jpeg,image/png,image/webp"></label><span class="admin-image-status" data-image-status>圖片儲存在雲端，訪客可同步讀取</span></div><p class="image-help">選擇 JPG、PNG 或 WebP，按「儲存商品」後會上傳至 Supabase Storage，其他訪客重新整理後即可看到更新。</p><div class="admin-product-fields"><label>商城售價（台幣；空白代表待報價）<input data-field="price" type="number" min="0" step="1" value="${p.price??''}" placeholder="請輸入已確認售價"></label><label>分類<select data-field="category">${categories.slice(1).map(c=>`<option value="${html(c)}" ${c===p.category?'selected':''}>${html(c)}</option>`).join('')}</select></label><label>尺寸規格<input data-field="size" value="${html(p.size||'')}" placeholder="填入供應商尺寸"></label><label>材質規格<input data-field="material" value="${html(p.material||'')}" placeholder="填入供應商材質"></label><label>客製方式<input data-field="customization" value="${html(p.customization||'')}" placeholder="照片／圖案／位置等"></label><label>可選規格（逗號分隔）<input data-field="variants" value="${html(Array.isArray(p.variants)?p.variants.join(', '):(p.variants||''))}" placeholder="例如：A款, B款, L, XL"></label><label>製作／交期<input data-field="delivery" value="${html(p.delivery||'')}" placeholder="例如 5–7 個工作天"></label></div><details class="admin-catalog-details"><summary>原始目錄規格／價格</summary><div class="catalog-origin-text">${html(p.catalogDetails||'原表未列，待確認。')}</div></details></div><div class="save-row"><button class="btn btn-light" data-save-product="${html(p.id)}">儲存商品</button><span class="save-indicator" id="saved-${html(p.id)}"></span></div></div>`).join('')||'<p class="muted">找不到符合的商品。</p>';
+    more.style.display=visible.length<matched.length?'inline-flex':'none';
+    list.querySelectorAll('[data-image-file]').forEach(input=>input.addEventListener('change',async()=>{
+      const file=input.files?.[0];if(!file)return;
+      const row=input.closest('[data-admin-id]'),status=row.querySelector('[data-image-status]');
+      status.textContent='正在壓縮圖片……';
+      try{const data=await compressProductImage(file);row.dataset.pendingPoster=data;row.querySelector('.admin-product-preview').src=data;status.textContent='圖片已選取，按「儲存商品」上傳雲端。';}
+      catch(error){status.textContent='圖片未更新';toast(error.message||'圖片處理失敗');}
+      input.value='';
+    }));
+    list.querySelectorAll('[data-save-product]').forEach(btn=>btn.addEventListener('click',async()=>{
+      const id=btn.dataset.saveProduct,row=list.querySelector(`[data-admin-id="${CSS.escape(id)}"]`),p=productById(id);
+      if(!p)return;
+      const snapshot=JSON.parse(JSON.stringify(p));
+      const pendingPoster=row.dataset.pendingPoster||null;
+      btn.disabled=true;btn.textContent='正在儲存雲端……';
+      row.querySelector('[data-image-status]').textContent=pendingPoster?'正在上傳圖片並更新雲端資料……':'正在更新商品雲端資料……';
+      try{
+        const updated={...p};
+        row.querySelectorAll('[data-field]').forEach(el=>{
+          const key=el.dataset.field;
+          if(key==='price'){const v=el.value.trim();updated.price=(v!==''&&Number(v)>0)?Number(v):null;}
+          else if(key==='variants'){updated.variants=el.value.split(',').map(v=>v.trim()).filter(Boolean);}
+          else updated[key]=el.value.trim();
+        });
+        const saved=await saveProductCloud(updated,pendingPoster);
+        Object.assign(p,saved);
+        const preview=row.querySelector('.admin-product-preview');preview.src=p.poster;
+        delete row.dataset.pendingPoster;
+        row.querySelector('[data-image-status]').textContent=pendingPoster?'圖片及商品資料已成功儲存至雲端。':'商品資料已成功儲存至雲端。';
+        $('#saved-'+CSS.escape(id)).textContent='已儲存 ✓';
+        toast('雲端商品更新成功，其他訪客重新整理即可看到新資料');
+      }catch(error){
+        Object.assign(p,snapshot);
+        row.querySelector('[data-image-status]').textContent='儲存失敗，原雲端資料未確認更新。';
+        toast('儲存失敗：'+(error.message||'請檢查登入及網路'));
+      }finally{btn.disabled=false;btn.textContent='儲存商品';}
+    }));
+  }
+  search.addEventListener('input',()=>{shown=30;renderRows();});
+  category.addEventListener('change',()=>{shown=30;renderRows();});
+  more.addEventListener('click',()=>{shown+=30;renderRows();});
+  renderRows();
+  renderOrdersAdmin();
+}
+function renderOrdersAdmin(){const box=$('#ordersList'),orders=getOrders();if(!orders.length){box.innerHTML='<p class="muted" style="font-size:11px">目前沒有舊版本機測試訂單。新訂單已儲存在 Supabase，會在獨立訂單後台管理。</p>';return}box.innerHTML=orders.slice(0,15).map(o=>`<div class="order-line"><b>${html(o.id)}</b>　<span class="muted">${new Date(o.createdAt).toLocaleString('zh-TW')}</span><br>${html(o.customer.name)}｜${html(o.customer.phone)}｜${html(o.status)}<br>${o.items.map(i=>html(i.name)+' × '+i.qty).join('、')}<br>金額：${o.subtotal===null?'待報價':'NT$ '+o.subtotal}</div>`).join('')}
+function downloadFile(filename,content,type){const blob=new Blob([content],{type});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000)}
+function exportOrders(){downloadFile('unyuhuan-test-orders.json',JSON.stringify(getOrders(),null,2),'application/json');toast('已匯出舊版本機測試訂單；不含 Supabase 雲端訂單');}
+$('#openAdmin').addEventListener('click',()=>{if(!$('#adminDialog').open)$('#adminDialog').showModal();renderAdmin();});
+$('#adminDialog').addEventListener('close',()=>route());
+$('#exportOrders').addEventListener('click',exportOrders);
+$('#exportProducts').addEventListener('click',exportProducts);
+$('#reloadCloudProducts').addEventListener('click',async()=>{const button=$('#reloadCloudProducts');button.disabled=true;try{const total=await loadCloudProducts();renderAdminCatalog();toast(`已重新讀取 ${total} 項雲端商品`);}catch(error){toast('讀取失敗：'+error.message);}finally{button.disabled=false;}});
+$('#adminLogout').addEventListener('click',async()=>{if(supabaseClient)await supabaseClient.auth.signOut();$('#adminToolbar').hidden=true;renderAdminLogin('已登出管理員帳號。');});
+$('#importProducts').addEventListener('change',async e=>{
+  const file=e.target.files?.[0];if(!file)return;
+  try{
+    if(!(await verifyAdmin()))throw new Error('請先登入管理員帳號');
+    const incoming=JSON.parse(await file.text());
+    if(!Array.isArray(incoming))throw new Error('JSON 格式必須是商品陣列');
+    const map=new Map(incoming.filter(x=>x&&x.id).map(x=>[x.id,x]));
+    const merged=products.map(current=>{
+      const incomingProduct=map.get(current.id);if(!incomingProduct)return current;
+      const updated={...current,...incomingProduct,id:current.id};
+      if(typeof updated.poster==='string'&&updated.poster.startsWith('data:image/'))throw new Error(`商品 ${current.id} 的圖片是內嵌資料，請改用後台選圖功能上傳。`);
+      return updated;
+    });
+    for(let i=0;i<merged.length;i+=40){
+      const rows=merged.slice(i,i+40).map(p=>({id:p.id,data:p,updated_at:new Date().toISOString()}));
+      const {error}=await supabaseClient.from('products').upsert(rows,{onConflict:'id'});if(error)throw error;
+    }
+    products=merged;renderAdminCatalog();toast('商品設定已匯入並同步至雲端');
+  }catch(error){toast('匯入失敗：'+(error.message||'請檢查檔案'));}
+  e.target.value='';
+});
+$('#menuBtn').addEventListener('click',()=>$('.main-nav').classList.toggle('open'));
+document.querySelectorAll('.main-nav a').forEach(a=>a.addEventListener('click',()=>$('.main-nav').classList.remove('open')));
 function route(){const [page,arg]=urlHash();if(page==='product')renderProduct(arg);else if(page==='cart')renderCart();else if(page==='checkout')renderCheckout();else if(page==='success')renderSuccess(arg);else if(page==='category'){currentCategory=categories.includes(arg)?arg:'全部商品';searchText='';renderHome();setTimeout(()=>document.querySelector('#products')?.scrollIntoView(),30)}else if(['products','videos','howto','faq'].includes(page)){renderHome();setTimeout(()=>document.getElementById(page)?.scrollIntoView({behavior:'smooth'}),30)}else{currentCategory='全部商品';renderHome()}updateCartCount();}
-window.addEventListener('hashchange',route);route();
+window.addEventListener('hashchange',route);
+(async function bootStore(){
+  app.innerHTML='<section class="page-wrap"><div class="empty-state"><h2>正在讀取最新商品資料……</h2><p>正在連接三氏商城雲端商品資料庫。</p></div></section>';
+  try{
+    const total=await loadCloudProducts();
+    console.info(`Loaded ${total} products from Supabase.`);
+  }catch(error){
+    console.warn('Cloud product load failed; using bundled product defaults:',error);
+    products=loadProducts();
+    toast('目前無法讀取雲端商品，暫時顯示網站內建商品資料');
+  }
+  route();
+})();
 })();
